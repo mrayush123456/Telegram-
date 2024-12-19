@@ -1,9 +1,15 @@
 from flask import Flask, request, render_template_string
-from telethon import TelegramClient, errors
+from telethon import TelegramClient
+import asyncio
+import os
 import time
 
-# Flask app
+# Flask App
 app = Flask(__name__)
+
+# Telegram API credentials (replace with your API ID and Hash)
+API_ID = 'your_api_id'
+API_HASH = 'your_api_hash'
 
 # HTML Template
 HTML_TEMPLATE = '''
@@ -14,96 +20,118 @@ HTML_TEMPLATE = '''
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Telegram Bot</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background-color: #282c34;
+      color: #ffffff;
+      font-family: Arial, sans-serif;
+      background-image: radial-gradient(circle, #ff7eb3, #ff758c, #ff7977, #ff845e, #ff9947);
+      height: 100vh;
+    }
+    .container {
+      max-width: 600px;
+      margin: auto;
+      padding: 20px;
+      background-color: rgba(0, 0, 0, 0.7);
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+    }
+    .btn-submit {
+      width: 100%;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+  </style>
 </head>
 <body>
-  <div class="container mt-5">
-    <h1 class="text-center">Telegram Messaging Bot</h1>
+  <div class="container">
+    <h1>Telegram Bot</h1>
     <form action="/" method="post" enctype="multipart/form-data">
       <div class="mb-3">
-        <label for="apiId" class="form-label">Telegram API ID:</label>
-        <input type="text" class="form-control" id="apiId" name="apiId" required>
+        <label for="phone" class="form-label">Enter Mobile Number:</label>
+        <input type="text" class="form-control" id="phone" name="phone" placeholder="+1234567890" required>
       </div>
       <div class="mb-3">
-        <label for="apiHash" class="form-label">Telegram API Hash:</label>
-        <input type="text" class="form-control" id="apiHash" name="apiHash" required>
+        <label for="otp" class="form-label">Enter OTP Code:</label>
+        <input type="text" class="form-control" id="otp" name="otp" placeholder="12345">
       </div>
       <div class="mb-3">
-        <label for="phoneNumber" class="form-label">Telegram Phone Number:</label>
-        <input type="text" class="form-control" id="phoneNumber" name="phoneNumber" required>
-      </div>
-      <div class="mb-3">
-        <label for="targetUsername" class="form-label">Target Username:</label>
-        <input type="text" class="form-control" id="targetUsername" name="targetUsername" required>
+        <label for="username" class="form-label">Target Username/Group:</label>
+        <input type="text" class="form-control" id="username" name="username" required>
       </div>
       <div class="mb-3">
         <label for="txtFile" class="form-label">Upload Message File (.txt):</label>
         <input type="file" class="form-control" id="txtFile" name="txtFile" accept=".txt" required>
       </div>
       <div class="mb-3">
-        <label for="delay" class="form-label">Delay Between Messages (in seconds):</label>
+        <label for="delay" class="form-label">Delay Between Messages (seconds):</label>
         <input type="number" class="form-control" id="delay" name="delay" required>
       </div>
-      <div class="mb-3">
-        <label for="repeat" class="form-label">Number of Times to Repeat:</label>
-        <input type="number" class="form-control" id="repeat" name="repeat" required>
-      </div>
-      <button type="submit" class="btn btn-primary w-100">Send Messages</button>
+      <button type="submit" class="btn btn-primary btn-submit">Submit</button>
     </form>
   </div>
 </body>
 </html>
 '''
 
-# Route to handle the form
+# Global Telegram client variable
+client = None
+
 @app.route("/", methods=["GET", "POST"])
 def telegram_bot():
+    global client
+
     if request.method == "POST":
         # Get form data
-        api_id = int(request.form["apiId"])
-        api_hash = request.form["apiHash"]
-        phone_number = request.form["phoneNumber"]
-        target_username = request.form["targetUsername"]
-        delay = int(request.form["delay"])
-        repeat_count = int(request.form["repeat"])
+        phone = request.form.get("phone")
+        otp = request.form.get("otp")
+        username = request.form.get("username")
+        delay = int(request.form.get("delay"))
         txt_file = request.files["txtFile"]
 
-        # Read messages from file
+        # Read messages from the uploaded file
         try:
             messages = txt_file.read().decode("utf-8").splitlines()
         except Exception as e:
             return f"<p>Error reading file: {e}</p>"
 
-        # Initialize Telegram client
-        client = TelegramClient("session", api_id, api_hash)
+        # Step 1: Initialize Telegram client if not already logged in
+        if not client:
+            client = TelegramClient("session_name", API_ID, API_HASH)
 
-        async def send_messages():
+        async def run_bot():
+            # Connect to Telegram
+            await client.connect()
+
+            # Login or enter OTP
+            if not await client.is_user_authorized():
+                try:
+                    if otp:
+                        await client.sign_in(phone, code=otp)
+                    else:
+                        await client.send_code_request(phone)
+                        return "<p>OTP sent. Please enter it in the OTP field and resubmit.</p>"
+                except Exception as e:
+                    return f"<p>Error during login: {e}</p>"
+
+            # Send messages to the target
             try:
-                await client.start(phone=phone_number)
-                print("[INFO] Logged into Telegram successfully!")
-                
-                for _ in range(repeat_count):
-                    for message in messages:
-                        try:
-                            await client.send_message(target_username, message)
-                            print(f"[SUCCESS] Message sent to {target_username}: {message}")
-                            time.sleep(delay)
-                        except errors.rpcerrorlist.UsernameNotOccupiedError:
-                            return f"<p>[ERROR] Username {target_username} does not exist.</p>"
-                        except Exception as e:
-                            print(f"[ERROR] Failed to send message: {e}")
-                            time.sleep(5)
-
+                for message in messages:
+                    await client.send_message(username, message)
+                    time.sleep(delay)  # Delay between messages
             except Exception as e:
-                return f"<p>[ERROR] Failed to log in or send messages: {e}</p>"
-            finally:
-                await client.disconnect()
-                print("[INFO] Disconnected from Telegram.")
+                return f"<p>Error sending message: {e}</p>"
 
-        # Run the Telegram client and send messages
-        client.loop.run_until_complete(send_messages())
-        return "<p>Messages sent successfully!</p>"
+            return "<p>Messages sent successfully!</p>"
+
+        # Run the Telegram bot
+        asyncio.run(run_bot())
 
     return render_template_string(HTML_TEMPLATE)
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True, port=5000)
+  
